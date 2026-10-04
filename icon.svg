@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="haltungBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#30d158"/>
+      <stop offset="1" stop-color="#0a84ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#haltungBg)"/>
+  <!-- upright reference line and the tilt arc -->
+  <line x1="56" y1="104" x2="56" y2="22" stroke="#fff" stroke-opacity=".45" stroke-width="4" stroke-dasharray="6 6" stroke-linecap="round"/>
+  <path d="M56 40 A40 40 0 0 1 80 47" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <!-- neck and head, tipped forward -->
+  <path d="M56 104 L56 84 L66 72" fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <g transform="rotate(22 66 72)">
+    <ellipse cx="66" cy="50" rx="19" ry="23" fill="#fff"/>
+    <path d="M84 50 L92 56 L84 60 Z" fill="#fff"/>
+    <rect x="58" y="50" width="6" height="16" rx="3" fill="#0a84ff"/>
+  </g>
+</svg>

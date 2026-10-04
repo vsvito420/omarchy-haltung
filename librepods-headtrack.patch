@@ -1,0 +1,106 @@
+librepods (omapods fork): stream head-tracking frames to IPC clients via the "headtrack" verb.
+Apply in the plugin root with: git apply librepods-headtrack.patch   (GPL-3.0, like librepods)
+
+diff --git a/daemon/airpods_packets.h b/daemon/airpods_packets.h
+index 94153a4..f104270 100644
+--- a/daemon/airpods_packets.h
++++ b/daemon/airpods_packets.h
+@@ -154,6 +154,15 @@ namespace AirPodsPackets
+         static const QByteArray AIRPODS_DISCONNECTED = QByteArray::fromHex("00010000");
+     }
+ 
++    // Head tracking (opcode 0x17), from upstream LibrePods' Android AACPManager.
++    // The pods stream IMU frames at ~25 Hz to the first AAP channel only, so a second client gets nothing.
++    namespace HeadTracking
++    {
++        static const QByteArray START = QByteArray::fromHex("040004001700000010000f000873420b081010021a0501409c0000");
++        static const QByteArray STOP = QByteArray::fromHex("040004001700000010000f000875420b081010021a050100000000");
++        static const QByteArray DATA_HEADER = QByteArray::fromHex("04000400170000001000");
++    }
++
+     // Phone Communication Packets
+     namespace Phone
+     {
+diff --git a/daemon/main.cpp b/daemon/main.cpp
+index cb4e56f..64be400 100644
+--- a/daemon/main.cpp
++++ b/daemon/main.cpp
+@@ -3,6 +3,7 @@
+ #include <QSaveFile>
+ #include <QFileInfo>
+ #include <QLocalSocket>
++#include <QPointer>
+ #include <QApplication>
+ #include <QQmlApplicationEngine>
+ #include <QQuickStyle>
+@@ -660,6 +661,21 @@ public slots:
+     }
+ 
+     // The settings file holds the pairing keys, so keep it and its directory owner only.
++    // A client that sends "headtrack" gets every head-tracking frame as one hex line until it hangs up.
++    // The stream runs only while someone listens, so an idle daemon adds no Bluetooth traffic.
++    void addHeadTrackSubscriber(QLocalSocket *client)
++    {
++        m_headTrackSubscribers.append(client);
++        connect(client, &QLocalSocket::disconnected, this, [this, client]() {
++            m_headTrackSubscribers.removeAll(client);
++            m_headTrackSubscribers.removeAll(nullptr);
++            if (m_headTrackSubscribers.isEmpty())
++                writePacketToSocket(AirPodsPackets::HeadTracking::STOP, "Head tracking stop written: ");
++        });
++        if (m_headTrackSubscribers.size() == 1)
++            writePacketToSocket(AirPodsPackets::HeadTracking::START, "Head tracking start written: ");
++    }
++
+     void restrictSettingsAccess()
+     {
+         if (!m_settings) {
+@@ -1258,6 +1274,15 @@ private slots:
+ 
+     void parseData(const QByteArray &data)
+     {
++        // First and cheapest: these arrive 25 times a second while head tracking runs.
++        if (data.size() > 60 && data.startsWith(AirPodsPackets::HeadTracking::DATA_HEADER))
++        {
++            const QByteArray line = data.toHex() + '\n';
++            for (const auto &client : std::as_const(m_headTrackSubscribers))
++                if (client) client->write(line);
++            return;
++        }
++
+         LOG_DEBUG("Received: " << data.toHex());
+ 
+         if (data.startsWith(AirPodsPackets::Parse::HANDSHAKE_ACK))
+@@ -1268,6 +1293,13 @@ private slots:
+         {
+             writePacketToSocket(AirPodsPackets::Connection::REQUEST_NOTIFICATIONS, "Request notifications packet written: ");
+ 
++            // A reconnect drops the pods' head-tracking state, so resume it for anyone still listening.
++            if (!m_headTrackSubscribers.isEmpty())
++                QTimer::singleShot(500, this, [this]() {
++                    if (!m_headTrackSubscribers.isEmpty())
++                        writePacketToSocket(AirPodsPackets::HeadTracking::START, "Head tracking start written: ");
++                });
++
+             QTimer::singleShot(2000, this, [this]() {
+                 if (m_deviceInfo->batteryStatus().isEmpty()) {
+                     writePacketToSocket(AirPodsPackets::Connection::REQUEST_NOTIFICATIONS, "Request notifications packet written: ");
+@@ -1669,6 +1701,7 @@ private:
+     int m_adaptiveLevelChangesTotal = 0;
+     int m_oneBudANCChangesTotal = 0;
+     int m_reopenCallsTotal = 0;
++    QList<QPointer<QLocalSocket>> m_headTrackSubscribers;
+ 
+     // Low-battery notification latches per battery source. State +
+     // hysteresis live in LowBatteryLatch (see lowbatterywatcher.hpp);
+@@ -2126,6 +2159,10 @@ int main(int argc, char *argv[]) {
+                 if (auto level = OpenPods::Ipc::parseIntVerb(msg, QStringLiteral("adaptive:"))) {
+                     trayAppPtr->setAdaptiveNoiseLevel(*level);
+                 }
++            } else if (msg == "headtrack") {
++                // Keep the socket open: it is now a stream, and hanging up is the stop signal.
++                trayAppPtr->addHeadTrackSubscriber(clientSocket);
++                return;
+             } else if (msg == "status") {
+                 // Read-only status snapshot. One-line JSON; the consumer
+                 // (Quickshell tile, status bar) doesn't need to keep its

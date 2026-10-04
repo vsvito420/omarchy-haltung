@@ -1,0 +1,15 @@
+[Unit]
+Description=haltung: posture monitor from the AirPods head-tracking sensors
+After=graphical-session.target librepods.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/haltung
+Restart=on-failure
+RestartSec=5
+# Never compete with a game for the CPU.
+Nice=19
+CPUSchedulingPolicy=idle
+
+[Install]
+WantedBy=graphical-session.target
