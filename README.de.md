@@ -30,6 +30,7 @@ kippt, ohne Drift und ohne Kamera. Das ist der typische Zock-Buckel.
 - 📐 **Pitch** (vor / zurück) und **Roll** (seitlich) gegenüber deiner kalibrierten aufrechten Haltung
 - 📈 **Plots:** die letzten 2 Minuten mit 25 Hz und die letzten 30 Minuten als 10-s-Mittel, Schwellwerte gestrichelt
 - 📊 **Werte:** Mittel der letzten 60 s, Anteil der Sitzung über 10°, wie lange du schon drüber bist
+- 🔊 **Piept wie ein Einparksensor:** von 6° bis 10° immer schneller, darüber ein höherer Doppelpiep pro Sekunde, bis du gerade sitzt (`haltung --mute` schaltet es um)
 - 🟢🟡🔴 **Status:** gelb ab 10° Pitch, nach 15 s am Stück rot **SITZ GERADE**
 
 Nur Pitch zählt als krumm: Ein Blick auf den zweiten Monitor oder seitliches Kopfkippen löst nichts aus.
@@ -74,6 +75,9 @@ lassen sich Pitch und Roll trennen. Ohne Nicken (unter 10°) gibt es nur den Ges
 | `position` | `top` | `top` oder `bottom` |
 | `warn_deg` / `bad_deg` | `10` / `18` | Pitch-Schwellwerte |
 | `alert_after_s` | `15` | Sekunden über `warn_deg` bis zum roten Alarm |
+| `beep` | `true` | Piepen wie ein Einparksensor (umschalten mit `haltung --mute`) |
+| `beep_near_deg` | `4` | so viele Grad unter `warn_deg` fängt es an |
+| `beep_volume` | `0.25` | 0 … 1 |
 
 ## So funktioniert's
 

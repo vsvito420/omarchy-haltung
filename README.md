@@ -30,6 +30,7 @@ with no drift and no camera. That is the classic "gaming hunch".
 - 📐 **Pitch** (forward / back) and **Roll** (sideways) against your calibrated upright pose
 - 📈 **Plots:** the last 2 minutes at 25 Hz and the last 30 minutes as 10 s means, with the thresholds dashed
 - 📊 **Stats:** mean of the last 60 s, share of the session above 10°, how long you have been above it
+- 🔊 **Beeps like a parking sensor:** faster and faster from 6° towards 10°, then a higher double beep every second until you sit up (`haltung --mute` toggles them)
 - 🟢🟡🔴 **Status:** yellow above 10° pitch, **SITZ GERADE** in red after 15 s in a row
 
 Only pitch counts as slouching: looking at the second monitor or tilting your head sideways does not.
@@ -74,6 +75,9 @@ pitch from roll. Without a nod (less than 10°) you only get the total tilt.
 | `position` | `top` | `top` or `bottom` |
 | `warn_deg` / `bad_deg` | `10` / `18` | pitch thresholds |
 | `alert_after_s` | `15` | seconds above `warn_deg` before the red alert |
+| `beep` | `true` | parking-sensor beeps (toggle with `haltung --mute`) |
+| `beep_near_deg` | `4` | start beeping this many degrees below `warn_deg` |
+| `beep_volume` | `0.25` | 0 … 1 |
 
 ## How it works
 

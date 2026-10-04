@@ -6,13 +6,16 @@ measures the head's tilt against a calibrated upright pose and plots it in a
 layer-shell panel on the portrait monitor. Runs at SCHED_IDLE with software
 rendering so it stays out of a game's way.
 """
-import json, math, os, signal, socket, sys, time, tomllib, traceback
+import json, math, os, signal, socket, struct, subprocess, sys, time, tomllib, traceback, wave
 from collections import deque
 from pathlib import Path
 
 # `haltung --calibrate` asks the running panel to calibrate, e.g. from a keybinding.
 if "--calibrate" in sys.argv[1:]:
     os.execvp("systemctl", ["systemctl", "--user", "kill", "-s", "USR1", "haltung.service"])
+# `haltung --mute` switches the beeps off and on again.
+if "--mute" in sys.argv[1:]:
+    os.execvp("systemctl", ["systemctl", "--user", "kill", "-s", "USR2", "haltung.service"])
 
 # gtk4-layer-shell has to be loaded before libwayland-client, so re-exec with it preloaded.
 LAYER_LIB = "/usr/lib/libgtk4-layer-shell.so"
@@ -43,6 +46,9 @@ DEFAULTS = {
     "warn_deg": 10.0,        # tilt against the reference that counts as slouching
     "bad_deg": 18.0,
     "alert_after_s": 15,     # above warn_deg this long -> alert
+    "beep": True,            # parking-sensor beeps while approaching and above warn_deg
+    "beep_near_deg": 4.0,    # start beeping this far below warn_deg
+    "beep_volume": 0.25,     # 0..1
     "reference": None,       # calibrated gravity unit vector (upright, looking ahead)
     "axis": None,            # ear-to-ear axis from the nod, oriented so looking down is +pitch
     "calibrated_at": None,
@@ -308,6 +314,72 @@ class Feed:
         return True
 
 
+class Beeper:
+    """Parking sensor: single beeps that speed up while pitch approaches warn_deg,
+    a higher double beep once a second while above it. Played with pw-play, so the
+    sound goes wherever the default output is (the AirPods, usually)."""
+
+    RATE = 48000
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.next_at = 0.0
+        self.procs = []
+        d = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "haltung"
+        d.mkdir(exist_ok=True)
+        vol = max(0.0, min(1.0, float(cfg["beep_volume"])))
+        self.near = self.write(d / "near.wav", [(880, 0.06)], vol)
+        self.over = self.write(d / "over.wav", [(1320, 0.07), (0, 0.06), (1320, 0.07)], vol)
+
+    def write(self, path, parts, vol):
+        frames = bytearray()
+        for freq, dur in parts:
+            n = int(self.RATE * dur)
+            for i in range(n):
+                env = min(1.0, i / 240, (n - i) / 240)   # 5 ms fades, no clicks
+                v = math.sin(2 * math.pi * freq * i / self.RATE) * env * vol if freq else 0.0
+                frames += struct.pack("<h", int(v * 32767))
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(self.RATE)
+            w.writeframes(bytes(frames))
+        return str(path)
+
+    def interval(self, pitch, state):
+        """(seconds between beeps, sound) or None for silence."""
+        warn, near = self.cfg["warn_deg"], self.cfg["beep_near_deg"]
+        if pitch is None or state not in ("ok", "warn", "alert"):
+            return None
+        if pitch >= warn:
+            return 1.0, self.over
+        if pitch >= warn - near:
+            closeness = (pitch - (warn - near)) / near     # 0 at the edge of the zone, 1 at warn
+            return 1.2 - 0.95 * closeness, self.near
+        return None
+
+    def tick(self, pitch, state):
+        self.procs = [p for p in self.procs if p.poll() is None]
+        if not self.cfg["beep"]:
+            return
+        plan = self.interval(pitch, state)
+        now = time.monotonic()
+        if plan is None:
+            self.next_at = 0.0
+            return
+        gap, sound = plan
+        # Coming closer shortens the wait that is already running, like a parking sensor.
+        self.next_at = min(self.next_at, now + gap) if self.next_at else now
+        if now >= self.next_at and len(self.procs) < 3:
+            self.procs.append(subprocess.Popen(["pw-play", sound], stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.DEVNULL))
+            self.next_at = now + gap
+
+    def toggle(self):
+        self.cfg["beep"] = not self.cfg["beep"]
+        save_config(self.cfg)
+
+
 class Panel(Gtk.ApplicationWindow):
     def __init__(self, app, cfg):
         super().__init__(application=app, title="haltung")
@@ -315,6 +387,7 @@ class Panel(Gtk.ApplicationWindow):
         self.C = theme_colors()
         self.posture = Posture(cfg)
         self.feed = Feed(self.posture)
+        self.beeper = Beeper(cfg)
         self.state = "nodata"
 
         Layer.init_for_window(self)
@@ -349,6 +422,7 @@ class Panel(Gtk.ApplicationWindow):
         self.head_anim = None
         self.head_last = 0.0
         GLib.timeout_add(REDRAW_MS, self.tick)
+        GLib.timeout_add(50, self.beep_tick)   # fine enough for a 0.25 s beep gap
 
     @staticmethod
     def find_monitor(name):
@@ -367,6 +441,14 @@ class Panel(Gtk.ApplicationWindow):
             traceback.print_exc()
         self.area.queue_draw()
         self.update_head_target()
+        return True
+
+    def beep_tick(self):
+        try:
+            if self.state != "calib":
+                self.beeper.tick(self.posture.theta(), self.state)
+        except Exception:
+            traceback.print_exc()
         return True
 
     # 3D head: follows the measured angles, animated only while it is still moving
@@ -471,7 +553,8 @@ class Panel(Gtk.ApplicationWindow):
         # footer
         ref = f"Referenz {cfg['calibrated_at']}" if cfg.get("calibrated_at") else "keine Referenz"
         conn = "" if self.feed.status == "verbunden" else f"  ·  {self.feed.status}"
-        foot = f"{ref}  ·  |g| {p.mag:.2f} g  ·  {p.hz():4.1f} Hz{conn}  ·  Klick: kalibrieren"
+        beep = "Piep an" if cfg["beep"] else "Piep aus"
+        foot = f"{ref}  ·  |g| {p.mag:.2f} g  ·  {p.hz():4.1f} Hz{conn}  ·  {beep}  ·  Klick: kalibrieren"
         self.text(cr, pad, h - 12, foot, 15, C["muted"])
 
     @staticmethod
@@ -558,6 +641,7 @@ def main():
         panel.present()
         # SIGUSR1 (sent by `haltung --calibrate`) starts a calibration.
         signal.signal(signal.SIGUSR1, lambda *_: GLib.idle_add(panel.posture.start_calibration))
+        signal.signal(signal.SIGUSR2, lambda *_: GLib.idle_add(panel.beeper.toggle))
     app.connect("activate", activate)
     app.run([])
 
