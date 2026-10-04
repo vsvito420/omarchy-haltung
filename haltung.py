@@ -131,6 +131,7 @@ class Posture:
         self.bucket_t = 0.0
         self.calib = None                            # (phase, t0, samples)
         self.calib_note = ""
+        self.cue = lambda name: None                 # sound hook, set by the panel
         self.over_since = None
         self.n_total = 0
         self.n_over = 0
@@ -147,8 +148,8 @@ class Posture:
         self.g = acc if self.g is None else tuple(g + a * (x - g) for g, x in zip(self.g, acc))
         self.mag = mag / 1024
         self.t_last = now
-        if self.calib and self.calib[0] in ("upright", "nod"):
-            self.calib[2].append(self.g)
+        if self.calib and self.calib["steps"][self.calib["i"]] in ("upright", "down", "up"):
+            self.calib["samples"].append(self.g)
         theta = self.theta()
         if theta is None or self.calib:
             return
@@ -197,22 +198,22 @@ class Posture:
         vals = [v for t, v in self.short if now - t <= seconds]
         return sum(vals) / len(vals) if vals else None
 
+    # Calibration: a list of timed steps. The ear axis depends only on how the pods sit,
+    # so it is kept between calibrations and the nod is needed only once (or on request).
+    STEPS = {
+        "ready":   (3.0, "Gerade hinsetzen", "Rücken an die Lehne, geradeaus schauen"),
+        "upright": (2.0, "Still halten", "misst deine aufrechte Haltung"),
+        "down":    (3.0, "Nach unten schauen", "Kopf langsam runter, Blick auf den Tisch"),
+        "up":      (3.0, "Nach oben schauen", "Kopf langsam hoch, Blick an die Decke"),
+    }
+
     def state(self):
         now = time.monotonic()
         if self.calib:
-            phase, t0, samples = self.calib[:3]
-            if phase == "countdown" and now - t0 >= 3:
-                self.calib = ("upright", now, [])
-            elif phase == "upright" and now - t0 >= 2:
-                if len(samples) < 10:
-                    self.finish_calibration("zu wenig Daten, nochmal klicken")
-                else:
-                    ref = unit(tuple(sum(s[i] for s in samples) / len(samples) for i in range(3)))
-                    self.calib = ("nod", now, [], ref)
-            elif phase == "nod" and now - t0 >= 5:
-                self.compute_axis(self.calib[3], samples)
-            return "calib"
-            return "calib"
+            c = self.calib
+            if now - c["t0"] >= self.STEPS[c["steps"][c["i"]]][0]:
+                self.end_step(c)
+            return "calib" if self.calib else self.state()
         if not self.has_data():
             self.over_since = None
             return "nodata"
@@ -222,41 +223,60 @@ class Posture:
             return "ok"
         return "alert" if now - self.over_since >= self.cfg["alert_after_s"] else "warn"
 
-    def compute_axis(self, ref, samples):
-        """The nod sweeps gravity through the sagittal plane; its normal is the ear-to-ear axis.
-        The first clear excursion is the look down, which fixes the sign."""
+    def end_step(self, c):
+        step, samples = c["steps"][c["i"]], c["samples"]
+        if step == "upright":
+            if len(samples) < 10:
+                return self.finish_calibration("zu wenig Daten – AirPods im Ohr? Nochmal klicken", ok=False)
+            c["ref"] = unit(tuple(sum(v[i] for v in samples) / len(samples) for i in range(3)))
+        elif step in ("down", "up"):
+            # The furthest point of the movement, as long as it went far enough.
+            peak = max(samples, key=lambda v: angle_between(v, c["ref"]), default=None)
+            c[step] = peak if peak and angle_between(peak, c["ref"]) > 8 else None
+        c["i"] += 1
+        c["t0"] = time.monotonic()
+        c["samples"] = []
+        if c["i"] < len(c["steps"]):
+            self.cue("step")
+        else:
+            self.apply_calibration(c)
+
+    def apply_calibration(self, c):
+        ref = c["ref"]
         self.cfg["reference"] = list(ref)
         self.cfg["calibrated_at"] = time.strftime("%Y-%m-%d %H:%M")
-        down = next((s for s in samples if angle_between(s, ref) > 10), None)
-        if down is None:
-            self.cfg["axis"] = None
-            self.finish_calibration("kein Nicken erkannt: nur Gesamtwinkel, kein Pitch/Roll")
-            return
-        # Average the axis over every strong sample, flipping the look-up half onto the same side.
-        acc = (0.0, 0.0, 0.0)
-        first = unit(cross(ref, down))
-        for s in samples:
-            if angle_between(s, ref) > 7:
-                c = unit(cross(ref, s))
-                c = c if dot(c, first) >= 0 else tuple(-x for x in c)
-                acc = tuple(a + x for a, x in zip(acc, c))
-        axis = unit(acc)
-        # Orient so that cross(axis, ref) points towards the look down: then looking down is +pitch.
-        if dot(cross(axis, ref), down) < 0:
-            axis = tuple(-x for x in axis)
-        self.cfg["axis"] = list(axis)
+        proj = lambda v: tuple(x - dot(v, ref) * r for x, r in zip(v, ref))
+        if "down" in c or "up" in c:
+            if c.get("down") is None and c.get("up") is None:
+                return self.finish_calibration("Kopfbewegung nicht erkannt – Rechtsklick zum Wiederholen", ok=False)
+            fwd = (0.0, 0.0, 0.0)
+            if c.get("down"):
+                fwd = tuple(f + x for f, x in zip(fwd, unit(proj(c["down"]))))
+            if c.get("up"):
+                fwd = tuple(f - x for f, x in zip(fwd, unit(proj(c["up"]))))
+            # angles() takes forward as cross(axis, ref); this axis makes that the look down.
+            self.cfg["axis"] = list(unit(cross(ref, unit(fwd))))
+        elif self.cfg.get("axis"):
+            # Keep the learned axis, squared up against the new reference.
+            self.cfg["axis"] = list(unit(proj(self.cfg["axis"])))
         self.finish_calibration("")
 
-    def finish_calibration(self, note):
+    def finish_calibration(self, note, ok=True):
         self.calib_note = note
         save_config(self.cfg)
+        self.cue("done" if ok else "fail")
         self.calib = None
         self.over_since = None
         self.short.clear()
 
-    def start_calibration(self):
+    def start_calibration(self, full=False):
+        """Quick (sit up straight) by default; with the nod when asked or when no axis is known yet."""
+        steps = ["ready", "upright"]
+        if full or not self.cfg.get("axis"):
+            steps += ["down", "up"]
         self.calib_note = ""
-        self.calib = ("countdown", time.monotonic(), [])
+        self.calib = {"steps": steps, "i": 0, "t0": time.monotonic(), "samples": []}
+        self.cue("step")
 
 
 class Feed:
@@ -328,17 +348,21 @@ class Beeper:
         self.procs = []
         d = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "haltung"
         d.mkdir(exist_ok=True)
-        self.sound = self.write(d / "blip.wav", max(0.0, min(1.0, float(cfg["beep_volume"]))))
+        vol = max(0.0, min(1.0, float(cfg["beep_volume"])))
+        self.sound = self.write(d / "blip.wav", vol)
+        self.cues = {"step": self.write(d / "step.wav", vol, [(660, 0.12)]),
+                     "done": self.write(d / "done.wav", vol, [(520, 0.11), (780, 0.18)]),
+                     "fail": self.write(d / "fail.wav", vol, [(392, 0.12), (330, 0.2)])}
 
-    def write(self, path, vol):
-        # 90 ms at 520 Hz with a little octave on top, soft attack, exponential tail: a "blip", not a beep.
-        n = int(self.RATE * 0.09)
+    def write(self, path, vol, notes=((520, 0.09),)):
+        # Each note: a little octave on top, soft attack, exponential tail. A "blip", not a beep.
         frames = bytearray()
-        for i in range(n):
-            t = i / self.RATE
-            env = min(1.0, i / 480) * math.exp(-t * 38)
-            v = (math.sin(2 * math.pi * 520 * t) + 0.25 * math.sin(2 * math.pi * 1040 * t)) / 1.25
-            frames += struct.pack("<h", int(v * env * vol * 32767))
+        for freq, dur in notes:
+            for i in range(int(self.RATE * dur)):
+                t = i / self.RATE
+                env = min(1.0, i / 480) * math.exp(-t * 38 * 0.09 / dur)
+                v = (math.sin(2 * math.pi * freq * t) + 0.25 * math.sin(2 * math.pi * 2 * freq * t)) / 1.25
+                frames += struct.pack("<h", int(v * env * vol * 32767))
         with wave.open(str(path), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
@@ -372,6 +396,11 @@ class Beeper:
             self.procs.append(subprocess.Popen(["pw-play", self.sound], stdout=subprocess.DEVNULL,
                                                stderr=subprocess.DEVNULL))
             self.next_at = now + gap
+
+    def cue(self, name):
+        if self.cfg["beep"] and name in self.cues:
+            self.procs.append(subprocess.Popen(["pw-play", self.cues[name]], stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.DEVNULL))
 
     def toggle(self):
         self.cfg["beep"] = not self.cfg["beep"]
@@ -410,8 +439,10 @@ class Panel(Gtk.ApplicationWindow):
         box = Gtk.Box()
         box.append(self.head)
         box.append(self.area)
-        click = Gtk.GestureClick()
-        click.connect("released", lambda *_: self.posture.start_calibration())
+        self.posture.cue = lambda name: self.beeper.cue(name)
+        click = Gtk.GestureClick(button=0)
+        # Left click: sit up straight and done. Right click: also relearn the head axis (nod).
+        click.connect("released", lambda g, *_: self.posture.start_calibration(full=g.get_current_button() == 3))
         box.add_controller(click)
         self.set_child(box)
 
@@ -533,6 +564,8 @@ class Panel(Gtk.ApplicationWindow):
             self.text(cr, x, 78, value, 40 if i == 0 else 30, color, bold=i == 0)
             x += col_w
 
+        if self.state == "calib" and p.calib:
+            return self.draw_calibration(cr, w, h)
         msg = self.message()
         if msg:
             self.text(cr, pad, 114, msg, 18, C["red"] if self.state == "alert" else C["yellow"], bold=True)
@@ -552,26 +585,45 @@ class Panel(Gtk.ApplicationWindow):
         ref = f"Referenz {cfg['calibrated_at']}" if cfg.get("calibrated_at") else "keine Referenz"
         conn = "" if self.feed.status == "verbunden" else f"  ·  {self.feed.status}"
         beep = "Piep an" if cfg["beep"] else "Piep aus"
-        foot = f"{ref}  ·  |g| {p.mag:.2f} g  ·  {p.hz():4.1f} Hz{conn}  ·  {beep}  ·  Klick: kalibrieren"
+        foot = f"{ref} · {p.hz():4.1f} Hz{conn} · {beep} · Klick: kalibrieren (rechts: + Nicken)"
         self.text(cr, pad, h - 12, foot, 15, C["muted"])
 
     @staticmethod
     def fmt(v):
         return f"{v:5.1f}°" if v is not None else "  —"
 
+    def draw_calibration(self, cr, w, h):
+        C, c = self.C, self.posture.calib
+        step = c["steps"][c["i"]]
+        dur, title, sub = Posture.STEPS[step]
+        frac = min(1.0, (time.monotonic() - c["t0"]) / dur)
+        cr.set_source_rgb(*C["background"])
+        cr.paint()
+        pad = 28
+        self.text(cr, pad, 40, f"KALIBRIERUNG  ·  Schritt {c['i'] + 1} von {len(c['steps'])}", 17, C["dark_foreground"])
+        self.text(cr, pad, 120, title, 52, C["foreground"], bold=True)
+        self.text(cr, pad, 168, sub, 22, C["dark_foreground"])
+        # one bar per step: done, running, to come
+        bw = (w - 2 * pad - 12 * (len(c["steps"]) - 1)) / len(c["steps"])
+        for i in range(len(c["steps"])):
+            x = pad + i * (bw + 12)
+            cr.set_source_rgb(*C["lighter_background"])
+            cr.rectangle(x, 210, bw, 10)
+            cr.fill()
+            done = 1.0 if i < c["i"] else frac if i == c["i"] else 0.0
+            if done:
+                cr.set_source_rgb(*C["accent"])
+                cr.rectangle(x, 210, bw * done, 10)
+                cr.fill()
+        hint = "Ein Ton pro Schritt, zwei Töne = fertig" if self.cfg["beep"] else ""
+        self.text(cr, pad, h - 12, hint, 15, C["muted"])
+
     def message(self):
         p = self.posture
-        if self.state == "calib" and p.calib:
-            phase, t0 = p.calib[:2]
-            if phase == "countdown":
-                return f"KALIBRIERUNG: aufrecht hinsetzen, geradeaus schauen ... {3 - (time.monotonic() - t0):.0f}"
-            if phase == "upright":
-                return "KALIBRIERUNG: geradeaus schauen, still halten"
-            return f"KALIBRIERUNG: jetzt erst nach UNTEN, dann nach OBEN schauen ... {5 - (time.monotonic() - t0):.0f}"
         if self.state == "nodata":
             return "keine Daten: AirPods im Ohr und verbunden?"
         if self.state == "uncalibrated":
-            return "nicht kalibriert: aufrecht hinsetzen und klicken"
+            return "nicht kalibriert: aufrecht hinsetzen und aufs Panel klicken"
         if self.state == "alert":
             return "SITZ GERADE"
         if p.calib_note:

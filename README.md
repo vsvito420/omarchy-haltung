@@ -55,14 +55,12 @@ Remove it with `./uninstall.sh`.
 
 ## Calibrate
 
-Click the panel (or bind `haltung --calibrate` to a key), then:
+- **Left click** (or `haltung --calibrate`): sit up straight, look ahead. 5 s, done.
+- **Right click:** the same, plus relearning the head axis: look **down** for 3 s, then **up** for 3 s.
+  The first calibration does this automatically. After that the axis is kept, since it only depends on how the pods sit.
 
-1. sit up straight, 3 s countdown
-2. look straight ahead for 2 s
-3. when it says so: look clearly **down**, then **up** (5 s)
-
-The nod sweeps gravity through one plane. Its normal is your ear-to-ear axis, which is what splits
-pitch from roll. Without a nod (less than 10°) you only get the total tilt.
+A large screen with one bar per step guides you, plus a soft tone per step and two rising tones when it is done,
+so you do not have to look at the panel. Looking down and up gives the ear-to-ear axis, which is what splits pitch from roll.
 
 ## Settings
 

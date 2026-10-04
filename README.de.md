@@ -55,14 +55,12 @@ Entfernen mit `./uninstall.sh`.
 
 ## Kalibrieren
 
-Aufs Panel klicken (oder `haltung --calibrate` auf eine Taste legen), dann:
+- **Linksklick** (oder `haltung --calibrate`): gerade hinsetzen, geradeaus schauen. 5 s, fertig.
+- **Rechtsklick:** dasselbe, plus die Kopfachse neu lernen: 3 s nach **unten** schauen, dann 3 s nach **oben**.
+  Beim ersten Kalibrieren passiert das automatisch. Danach bleibt die Achse gespeichert, sie hängt nur davon ab, wie die AirPods sitzen.
 
-1. aufrecht hinsetzen, 3 s Countdown
-2. 2 s geradeaus schauen
-3. wenn es dazu auffordert: deutlich nach **unten**, dann nach **oben** schauen (5 s)
-
-Beim Nicken bewegt sich die Schwerkraft in einer Ebene. Deren Senkrechte ist die Ohr-zu-Ohr-Achse, und damit
-lassen sich Pitch und Roll trennen. Ohne Nicken (unter 10°) gibt es nur den Gesamtwinkel.
+Ein großer Bildschirm mit einem Balken pro Schritt führt durch, dazu ein weicher Ton pro Schritt und zwei steigende Töne, wenn es fertig ist.
+Du musst also nicht aufs Panel schauen. Aus dem Blick nach unten und oben ergibt sich die Ohr-zu-Ohr-Achse, und damit lassen sich Pitch und Roll trennen.
 
 ## Einstellungen
 
