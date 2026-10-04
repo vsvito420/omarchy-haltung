@@ -46,7 +46,7 @@ DEFAULTS = {
     "warn_deg": 10.0,        # tilt against the reference that counts as slouching
     "bad_deg": 18.0,
     "alert_after_s": 15,     # above warn_deg this long -> alert
-    "beep": True,            # parking-sensor beeps while approaching and above warn_deg
+    "beep": True,            # parking-sensor blips, faster the further you lean forward
     "beep_near_deg": 4.0,    # start beeping this far below warn_deg
     "beep_volume": 0.25,     # 0..1
     "reference": None,       # calibrated gravity unit vector (upright, looking ahead)
@@ -315,11 +315,12 @@ class Feed:
 
 
 class Beeper:
-    """Parking sensor: single beeps that speed up while pitch approaches warn_deg,
-    a higher double beep once a second while above it. Played with pw-play, so the
-    sound goes wherever the default output is (the AirPods, usually)."""
+    """Parking sensor: one soft blip whose rate follows the pitch, slow at the edge of
+    the zone, fast towards bad_deg. Played with pw-play, so it goes wherever the default
+    output is (the AirPods, usually)."""
 
     RATE = 48000
+    SLOWEST, FASTEST = 1.3, 0.15     # seconds between blips
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -327,18 +328,17 @@ class Beeper:
         self.procs = []
         d = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "haltung"
         d.mkdir(exist_ok=True)
-        vol = max(0.0, min(1.0, float(cfg["beep_volume"])))
-        self.near = self.write(d / "near.wav", [(880, 0.06)], vol)
-        self.over = self.write(d / "over.wav", [(1320, 0.07), (0, 0.06), (1320, 0.07)], vol)
+        self.sound = self.write(d / "blip.wav", max(0.0, min(1.0, float(cfg["beep_volume"]))))
 
-    def write(self, path, parts, vol):
+    def write(self, path, vol):
+        # 90 ms at 520 Hz with a little octave on top, soft attack, exponential tail: a "blip", not a beep.
+        n = int(self.RATE * 0.09)
         frames = bytearray()
-        for freq, dur in parts:
-            n = int(self.RATE * dur)
-            for i in range(n):
-                env = min(1.0, i / 240, (n - i) / 240)   # 5 ms fades, no clicks
-                v = math.sin(2 * math.pi * freq * i / self.RATE) * env * vol if freq else 0.0
-                frames += struct.pack("<h", int(v * 32767))
+        for i in range(n):
+            t = i / self.RATE
+            env = min(1.0, i / 480) * math.exp(-t * 38)
+            v = (math.sin(2 * math.pi * 520 * t) + 0.25 * math.sin(2 * math.pi * 1040 * t)) / 1.25
+            frames += struct.pack("<h", int(v * env * vol * 32767))
         with wave.open(str(path), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
@@ -347,31 +347,29 @@ class Beeper:
         return str(path)
 
     def interval(self, pitch, state):
-        """(seconds between beeps, sound) or None for silence."""
-        warn, near = self.cfg["warn_deg"], self.cfg["beep_near_deg"]
+        """Seconds between blips, or None for silence."""
         if pitch is None or state not in ("ok", "warn", "alert"):
             return None
-        if pitch >= warn:
-            return 1.0, self.over
-        if pitch >= warn - near:
-            closeness = (pitch - (warn - near)) / near     # 0 at the edge of the zone, 1 at warn
-            return 1.2 - 0.95 * closeness, self.near
-        return None
+        start = self.cfg["warn_deg"] - self.cfg["beep_near_deg"]
+        if pitch < start:
+            return None
+        x = min(1.0, (pitch - start) / max(1.0, self.cfg["bad_deg"] - start))
+        # Geometric, so each degree feels like the same step faster.
+        return self.SLOWEST * (self.FASTEST / self.SLOWEST) ** x
 
     def tick(self, pitch, state):
         self.procs = [p for p in self.procs if p.poll() is None]
         if not self.cfg["beep"]:
             return
-        plan = self.interval(pitch, state)
+        gap = self.interval(pitch, state)
         now = time.monotonic()
-        if plan is None:
+        if gap is None:
             self.next_at = 0.0
             return
-        gap, sound = plan
         # Coming closer shortens the wait that is already running, like a parking sensor.
         self.next_at = min(self.next_at, now + gap) if self.next_at else now
         if now >= self.next_at and len(self.procs) < 3:
-            self.procs.append(subprocess.Popen(["pw-play", sound], stdout=subprocess.DEVNULL,
+            self.procs.append(subprocess.Popen(["pw-play", self.sound], stdout=subprocess.DEVNULL,
                                                stderr=subprocess.DEVNULL))
             self.next_at = now + gap
 
