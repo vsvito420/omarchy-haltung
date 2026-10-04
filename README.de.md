@@ -29,8 +29,8 @@ kippt, ohne Drift und ohne Kamera. Das ist der typische Zock-Buckel.
 - 🧑 **3D-Kopf**, der mit deinem nickt und kippt (flüssig während der Bewegung, im Stillstand wird nichts gezeichnet)
 - 📐 **Pitch** (vor / zurück) und **Roll** (seitlich) gegenüber deiner kalibrierten aufrechten Haltung
 - 📈 **Plots:** die letzten 2 Minuten mit 25 Hz und die letzten 30 Minuten als 10-s-Mittel, Schwellwerte gestrichelt
-- 📊 **Werte:** Mittel der letzten 60 s, Anteil der Sitzung über 10°, wie lange du schon drüber bist
-- 🔊 **Piept wie ein Einparksensor:** ein weicher Ton, langsam ab 6°, je weiter du dich vorbeugst desto schneller, am schnellsten ab 18°, beim Geraderichten wieder langsamer (`haltung --mute` schaltet es um)
+- 📊 **Werte:** Mittel der letzten 60 s, Anteil der Sitzung außerhalb des Bereichs, wie lange du schon draußen bist
+- 🔊 **Piept wie ein Einparksensor:** ein weicher Ton, langsam kurz vor einer Grenze, je weiter drüber desto schneller, beim Geraderichten wieder langsamer (`haltung --mute` schaltet es um)
 - 🟢🟡🔴 **Status:** gelb ab 10° Pitch, nach 15 s am Stück rot **SITZ GERADE**
 
 Nur Pitch zählt als krumm: Ein Blick auf den zweiten Monitor oder seitliches Kopfkippen löst nichts aus.
@@ -55,8 +55,8 @@ Entfernen mit `./uninstall.sh`.
 
 ## Kalibrieren
 
-- **Linksklick** (oder `haltung --calibrate`): gerade hinsetzen, geradeaus schauen. 5 s, fertig.
-- **Rechtsklick:** dasselbe, plus die Kopfachse neu lernen: 3 s nach **unten** schauen, dann 3 s nach **oben**.
+- **Kopf antippen / Linksklick auf den Kopf** (oder `haltung --calibrate`): gerade hinsetzen, geradeaus schauen. 5 s, fertig.
+- **Rechtsklick auf den Kopf:** dasselbe, plus die Kopfachse neu lernen: 3 s nach **unten** schauen, dann 3 s nach **oben**.
   Beim ersten Kalibrieren passiert das automatisch. Danach bleibt die Achse gespeichert, sie hängt nur davon ab, wie die AirPods sitzen.
 
 Ein großer Bildschirm mit einem Balken pro Schritt führt durch, dazu ein weicher Ton pro Schritt und zwei steigende Töne, wenn es fertig ist.
@@ -71,10 +71,10 @@ Du musst also nicht aufs Panel schauen. Aus dem Blick nach unten und oben ergibt
 | `monitor` | `DP-1` | Anschlussname des Monitors (`hyprctl monitors`) |
 | `height` | `380` | Panelhöhe in px, wird freigehalten, damit Fenster es nicht verdecken |
 | `position` | `top` | `top` oder `bottom` |
-| `warn_deg` / `bad_deg` | `10` / `18` | Pitch-Schwellwerte |
-| `alert_after_s` | `15` | Sekunden über `warn_deg` bis zum roten Alarm |
+| `limit_hi` / `limit_lo` | `10` / `-8` | aufrechter Bereich in Grad Pitch (oder die gelben Linien ziehen) |
+| `alert_after_s` | `15` | Sekunden außerhalb des Bereichs bis zum roten Alarm |
 | `beep` | `true` | Piepen wie ein Einparksensor (umschalten mit `haltung --mute`) |
-| `beep_near_deg` | `4` | so viele Grad unter `warn_deg` fängt es an (am schnellsten bei `bad_deg`) |
+| `beep_near_deg` | `3` | so viele Grad vor einer Grenze fängt es an (am schnellsten 8° dahinter) |
 | `beep_volume` | `0.25` | 0 … 1 |
 
 ## So funktioniert's

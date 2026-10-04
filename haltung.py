@@ -43,11 +43,11 @@ DEFAULTS = {
     "monitor": "DP-1",
     "height": 380,
     "position": "top",       # top | bottom of the monitor
-    "warn_deg": 10.0,        # tilt against the reference that counts as slouching
-    "bad_deg": 18.0,
-    "alert_after_s": 15,     # above warn_deg this long -> alert
+    "limit_hi": 10.0,        # pitch above this (head forward) is outside the upright band
+    "limit_lo": -8.0,        # pitch below this (head back) is outside too; both draggable in the plot
+    "alert_after_s": 15,     # outside the band this long -> alert
     "beep": True,            # parking-sensor blips, faster the further you lean forward
-    "beep_near_deg": 4.0,    # start beeping this far below warn_deg
+    "beep_near_deg": 3.0,    # start blipping this far inside a limit
     "beep_volume": 0.25,     # 0..1
     "reference": None,       # calibrated gravity unit vector (upright, looking ahead)
     "axis": None,            # ear-to-ear axis from the nod, oriented so looking down is +pitch
@@ -58,7 +58,7 @@ ACC_OFFSET = 67        # int16 x/y/z accelerometer in an 81-byte frame, 1024 = 1
 TAU = 0.5              # smoothing time constant, seconds
 SHORT_WINDOW = 120     # seconds in the left plot
 LONG_WINDOW = 1800     # seconds in the right plot, as 10 s means
-Y_MIN, Y_MAX = -10.0, 30.0   # degrees, plot range
+Y_MIN, Y_MAX = -20.0, 30.0   # degrees, plot range
 REDRAW_MS = 200
 HEAD_W = 250           # px, the 3D head on the left
 HEAD_FPS = 30          # cap while the head is moving; nothing is drawn while it rests
@@ -71,6 +71,10 @@ def load_config():
         cfg.update(json.loads(CONFIG_FILE.read_text()))
     except (OSError, ValueError):
         pass
+    # Older configs had one forward threshold.
+    if "warn_deg" in cfg:
+        cfg["limit_hi"] = cfg.pop("warn_deg")
+    cfg.pop("bad_deg", None)
     return cfg
 
 
@@ -162,7 +166,7 @@ class Posture:
             self.bucket, self.bucket_t = [], now
         self.n_total += 1
         self.sum_total += theta
-        if theta >= self.cfg["warn_deg"]:
+        if not self.cfg["limit_lo"] <= theta <= self.cfg["limit_hi"]:
             self.n_over += 1
             self.over_since = self.over_since or now
         else:
@@ -335,8 +339,8 @@ class Feed:
 
 
 class Beeper:
-    """Parking sensor: one soft blip whose rate follows the pitch, slow at the edge of
-    the zone, fast towards bad_deg. Played with pw-play, so it goes wherever the default
+    """Parking sensor: one soft blip whose rate follows how close the pitch is to a limit,
+    slow just inside it, fastest 8° beyond it. Played with pw-play, so it goes wherever the default
     output is (the AirPods, usually)."""
 
     RATE = 48000
@@ -374,10 +378,12 @@ class Beeper:
         """Seconds between blips, or None for silence."""
         if pitch is None or state not in ("ok", "warn", "alert"):
             return None
-        start = self.cfg["warn_deg"] - self.cfg["beep_near_deg"]
-        if pitch < start:
+        near = self.cfg["beep_near_deg"]
+        # Distance to the nearer limit: positive inside the band, negative outside.
+        d = min(self.cfg["limit_hi"] - pitch, pitch - self.cfg["limit_lo"])
+        if d >= near:
             return None
-        x = min(1.0, (pitch - start) / max(1.0, self.cfg["bad_deg"] - start))
+        x = min(1.0, (near - d) / (near + 8.0))
         # Geometric, so each degree feels like the same step faster.
         return self.SLOWEST * (self.FASTEST / self.SLOWEST) ** x
 
@@ -441,9 +447,22 @@ class Panel(Gtk.ApplicationWindow):
         box.append(self.area)
         self.posture.cue = lambda name: self.beeper.cue(name)
         click = Gtk.GestureClick(button=0)
-        # Left click: sit up straight and done. Right click: also relearn the head axis (nod).
+        # Tap / left click on the head: sit up straight and done. Right click: also relearn the head axis.
         click.connect("released", lambda g, *_: self.posture.start_calibration(full=g.get_current_button() == 3))
-        box.add_controller(click)
+        self.head.add_controller(click)
+
+        # The limit lines in the plots are dragged with the mouse or a finger.
+        self.plot_geo = []           # (x, y, w, h) of each plot, from the last draw
+        self.dragging = None         # "limit_hi" / "limit_lo"
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", self.on_drag_begin)
+        drag.connect("drag-update", self.on_drag_update)
+        drag.connect("drag-end", self.on_drag_end)
+        self.area.add_controller(drag)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", lambda _c, x, y: self.area.set_cursor_from_name(
+            "ns-resize" if self.limit_at(x, y) else None))
+        self.area.add_controller(motion)
         self.set_child(box)
 
         self.shown = [0.0, 0.0]      # pitch, roll the head currently displays
@@ -471,6 +490,49 @@ class Panel(Gtk.ApplicationWindow):
         self.area.queue_draw()
         self.update_head_target()
         return True
+
+    # dragging the limits
+
+    @staticmethod
+    def deg_to_y(y, h, deg):
+        return y + h - h * (min(max(deg, Y_MIN), Y_MAX) - Y_MIN) / (Y_MAX - Y_MIN)
+
+    @staticmethod
+    def y_to_deg(y, h, py):
+        return Y_MIN + (y + h - py) / h * (Y_MAX - Y_MIN)
+
+    def limit_at(self, px, py):
+        """The limit line under the pointer, if any (generous for fingers)."""
+        for x, y, w, h in self.plot_geo:
+            if x - 10 <= px <= x + w + 10 and y - 20 <= py <= y + h + 20:
+                key = min(("limit_hi", "limit_lo"), key=lambda k: abs(self.deg_to_y(y, h, self.cfg[k]) - py))
+                if abs(self.deg_to_y(y, h, self.cfg[key]) - py) <= 22:
+                    return key, (x, y, w, h)
+        return None
+
+    def on_drag_begin(self, gesture, px, py):
+        hit = self.limit_at(px, py)
+        self.dragging = hit
+        self.drag_start = (px, py)
+        if not hit:
+            gesture.set_state(Gtk.EventSequenceState.DENIED)
+
+    def on_drag_update(self, _g, dx, dy):
+        if not self.dragging:
+            return
+        key, (x, y, w, h) = self.dragging
+        deg = round(self.y_to_deg(y, h, self.drag_start[1] + dy) * 2) / 2   # 0.5° steps
+        if key == "limit_hi":
+            deg = max(self.cfg["limit_lo"] + 2, min(Y_MAX, deg))
+        else:
+            deg = min(self.cfg["limit_hi"] - 2, max(Y_MIN, deg))
+        self.cfg[key] = deg
+        self.area.queue_draw()
+
+    def on_drag_end(self, *_):
+        if self.dragging:
+            save_config(self.cfg)
+        self.dragging = None
 
     def beep_tick(self):
         try:
@@ -553,7 +615,7 @@ class Panel(Gtk.ApplicationWindow):
             ("Pitch" if cfg.get("axis") else "Neigung", (f"{pitch:+5.1f}°" if cfg.get("axis") else f"{pitch:5.1f}°") if pitch is not None else "  —  "),
             ("Roll", f"{roll:+5.1f}°" if roll is not None else "  —"),
             ("Ø 60 s", self.fmt(p.mean(60))),
-            (f"> {cfg['warn_deg']:.0f}°", f"{100 * p.n_over / p.n_total:4.0f} %" if p.n_total else "  —"),
+            ("außerhalb", f"{100 * p.n_over / p.n_total:4.0f} %" if p.n_total else "  —"),
             ("über seit", f"{time.monotonic() - p.over_since:4.0f} s" if p.over_since else "  —"),
         ]
         x = pad
@@ -571,6 +633,7 @@ class Panel(Gtk.ApplicationWindow):
             self.text(cr, pad, 114, msg, 18, C["red"] if self.state == "alert" else C["yellow"], bold=True)
 
         # plots
+        self.plot_geo = []
         top, bottom = 150, h - 64
         split = pad + (w - 2 * pad) * 0.62
         now = time.monotonic()
@@ -582,10 +645,9 @@ class Panel(Gtk.ApplicationWindow):
                   [-1800, -900, 0], lambda s: f"{s // 60:d} min", y_labels=False)
 
         # footer
-        ref = f"Referenz {cfg['calibrated_at']}" if cfg.get("calibrated_at") else "keine Referenz"
         conn = "" if self.feed.status == "verbunden" else f"  ·  {self.feed.status}"
         beep = "Piep an" if cfg["beep"] else "Piep aus"
-        foot = f"{ref} · {p.hz():4.1f} Hz{conn} · {beep} · Klick: kalibrieren (rechts: + Nicken)"
+        foot = f"{beep}{conn} · gelbe Linien ziehen = Grenzen · Kopf antippen = kalibrieren"
         self.text(cr, pad, h - 12, foot, 15, C["muted"])
 
     @staticmethod
@@ -623,7 +685,7 @@ class Panel(Gtk.ApplicationWindow):
         if self.state == "nodata":
             return "keine Daten: AirPods im Ohr und verbunden?"
         if self.state == "uncalibrated":
-            return "nicht kalibriert: aufrecht hinsetzen und aufs Panel klicken"
+            return "nicht kalibriert: aufrecht hinsetzen und den Kopf links antippen"
         if self.state == "alert":
             return "SITZ GERADE"
         if p.calib_note:
@@ -653,15 +715,30 @@ class Panel(Gtk.ApplicationWindow):
             align = "left" if i == 0 else "right" if i == len(xticks) - 1 else "center"
             self.text(cr, x + w + w * s / window, y + h + 20, xfmt(s), 14, C["muted"], align=align)
         self.text(cr, x, y - 8, title, 14, C["dark_foreground"])
-        # thresholds, dashed
-        cr.set_dash([6, 5])
-        for deg, col in ((cfg["warn_deg"], C["yellow"]), (cfg["bad_deg"], C["red"])):
-            yy = Y(deg)
-            cr.set_source_rgba(*col, 0.7)
+        # upright band between the two draggable limits
+        self.plot_geo.append((x, y, w, h))
+        hi, lo = Y(cfg["limit_hi"]), Y(cfg["limit_lo"])
+        cr.set_source_rgba(*C["green"], 0.08)
+        cr.rectangle(x, hi, w, lo - hi)
+        cr.fill()
+        for key, name, yy in (("limit_hi", "oben", hi), ("limit_lo", "unten", lo)):
+            active = self.dragging and self.dragging[0] == key
+            cr.set_source_rgba(*C["yellow"], 1.0 if active else 0.75)
+            cr.set_line_width(3 if active else 2)
             cr.move_to(x, yy)
             cr.line_to(x + w, yy)
             cr.stroke()
-        cr.set_dash([])
+            if y_labels:   # a handle with the value, so it is obvious the line can be grabbed
+                label = f"{name} {cfg[key]:+.1f}°"
+                cr.select_font_face("monospace", 0, 1)
+                cr.set_font_size(14)
+                tw = cr.text_extents(label).x_advance
+                bx, by = x + 8, yy - 11
+                cr.set_source_rgb(*C["yellow"])
+                cr.rectangle(bx, by, tw + 14, 22)
+                cr.fill()
+                self.text(cr, bx + 7, yy + 5, label, 14, C["background"], bold=True)
+        cr.set_line_width(1)
         # series
         cr.save()
         cr.rectangle(x, y, w, h)

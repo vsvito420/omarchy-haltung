@@ -29,9 +29,10 @@ with no drift and no camera. That is the classic "gaming hunch".
 - 🧑 **3D head** that nods and tilts with yours (smooth while moving, nothing drawn while it rests)
 - 📐 **Pitch** (forward / back) and **Roll** (sideways) against your calibrated upright pose
 - 📈 **Plots:** the last 2 minutes at 25 Hz and the last 30 minutes as 10 s means, with the thresholds dashed
-- 📊 **Stats:** mean of the last 60 s, share of the session above 10°, how long you have been above it
-- 🔊 **Blips like a parking sensor:** one soft sound, slow at 6°, faster the further you lean, fastest from 18°, slower again as you sit up (`haltung --mute` toggles it)
-- 🟢🟡🔴 **Status:** yellow above 10° pitch, **SITZ GERADE** in red after 15 s in a row
+- 📊 **Stats:** mean of the last 60 s, share of the session outside the band, how long you have been outside
+- 🔊 **Blips like a parking sensor:** one soft sound, slow just inside a limit, faster the further past it, slower again as you sit up (`haltung --mute` toggles it)
+- ↕️ **Your own limits:** drag the yellow upper and lower line in the plot with the mouse or a finger. Between them is your upright band
+- 🟢🟡🔴 **Status:** yellow outside the band, **SITZ GERADE** in red after 15 s in a row
 
 Only pitch counts as slouching: looking at the second monitor or tilting your head sideways does not.
 
@@ -55,8 +56,8 @@ Remove it with `./uninstall.sh`.
 
 ## Calibrate
 
-- **Left click** (or `haltung --calibrate`): sit up straight, look ahead. 5 s, done.
-- **Right click:** the same, plus relearning the head axis: look **down** for 3 s, then **up** for 3 s.
+- **Tap / left click on the head** (or `haltung --calibrate`): sit up straight, look ahead. 5 s, done.
+- **Right click on the head:** the same, plus relearning the head axis: look **down** for 3 s, then **up** for 3 s.
   The first calibration does this automatically. After that the axis is kept, since it only depends on how the pods sit.
 
 A large screen with one bar per step guides you, plus a soft tone per step and two rising tones when it is done,
@@ -71,10 +72,10 @@ so you do not have to look at the panel. Looking down and up gives the ear-to-ea
 | `monitor` | `DP-1` | connector name of the monitor (`hyprctl monitors`) |
 | `height` | `380` | panel height in px, reserved so windows do not cover it |
 | `position` | `top` | `top` or `bottom` |
-| `warn_deg` / `bad_deg` | `10` / `18` | pitch thresholds |
-| `alert_after_s` | `15` | seconds above `warn_deg` before the red alert |
+| `limit_hi` / `limit_lo` | `10` / `-8` | upright band in degrees pitch (drag the yellow lines instead) |
+| `alert_after_s` | `15` | seconds outside the band before the red alert |
 | `beep` | `true` | parking-sensor beeps (toggle with `haltung --mute`) |
-| `beep_near_deg` | `4` | start blipping this many degrees below `warn_deg` (fastest at `bad_deg`) |
+| `beep_near_deg` | `3` | start blipping this many degrees inside a limit (fastest 8° beyond it) |
 | `beep_volume` | `0.25` | 0 … 1 |
 
 ## How it works
